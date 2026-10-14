@@ -1,0 +1,16 @@
+{
+  "name": "taskflow",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Atajos para trabajar con TaskFlow desde la raíz del repositorio",
+  "scripts": {
+    "up": "docker compose up -d --build --wait",
+    "down": "docker compose down",
+    "logs": "docker compose logs -f",
+    "test:backend": "npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test",
+    "test:integracion": "node --test pruebas/integracion.test.mjs",
+    "test": "npm run test:backend && npm run test:frontend && npm run test:integracion"
+  },
+  "engines": { "node": ">=20" }
+}

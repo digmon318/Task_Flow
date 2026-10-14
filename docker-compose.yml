@@ -1,0 +1,97 @@
+# TaskFlow: 5 servicios orquestados con Docker Compose
+#
+#   frontend (Vue + nginx) -> backend (Express) -> MongoDB
+#                                   |                 ^
+#                                   v                 |
+#                                 Redis <--------- worker
+#
+# Todo funciona sin configurar nada: `docker compose up --build`.
+# Para usar MongoDB Atlas o un Redis en la nube, define MONGO_URI / REDIS_URL en el archivo .env.
+
+x-backend-env: &backend-env
+  MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/taskflow}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  MONGO_COLLECTION: ${MONGO_COLLECTION:-solicitudes}
+  WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-5}
+  WORKER_DELAY_MS: ${WORKER_DELAY_MS:-3000}
+  CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+  CACHE_TTL_ENCURSO_SECONDS: ${CACHE_TTL_ENCURSO_SECONDS:-5}
+
+services:
+  # Base de datos documental: solicitudes y respuestas
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017" # solo para herramientas locales (Compass, mongosh)
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Caché de lecturas + cola de solicitudes. AOF activado: la cola sobrevive a un reinicio
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # API REST: valida, guarda en Mongo, encola en Redis y sirve lecturas con caché
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      PORT: 3000
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # Proceso independiente: toma solicitudes de la cola, aplica las reglas y guarda la respuesta
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Interfaz Vue servida por nginx; reenvía /api al backend
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  redis-data:
